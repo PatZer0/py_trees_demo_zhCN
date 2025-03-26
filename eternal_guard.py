@@ -1,0 +1,224 @@
+#!/usr/bin/env python
+#
+# License: BSD
+#   https://raw.githubusercontent.com/splintered-reality/py_trees/devel/LICENSE
+#
+##############################################################################
+# 文档
+##############################################################################
+
+"""
+一个py_trees演示。
+
+.. argparse::
+   :module: py_trees.demos.eternal_guard
+   :func: command_line_argument_parser
+   :prog: py-trees-demo-eternal-guard
+
+.. graphviz:: dot/demo-eternal-guard.dot
+
+.. image:: images/eternal_guard.gif
+"""
+
+##############################################################################
+# 导入
+##############################################################################
+
+import argparse
+import functools
+import sys
+import time
+import typing
+
+import py_trees
+
+import py_trees.console as console
+
+##############################################################################
+# 类
+##############################################################################
+
+
+def description(root: py_trees.behaviour.Behaviour) -> str:
+    """
+    打印程序的描述和使用信息。
+
+    返回:
+       程序描述字符串
+    """
+    content = "'永久守卫'概念的演示。\n\n"
+    content += "两个二元(失败|成功)条件检查将在每个\n"
+    content += "tick时触发，从而为其后面的长时间运行的\n"
+    content += "任务序列提供快速失败机制。\n"
+    content += "\n"
+    if py_trees.console.has_colours:
+        banner_line = console.green + "*" * 79 + "\n" + console.reset
+        s = banner_line
+        s += console.bold_white + "永久守卫".center(79) + "\n" + console.reset
+        s += banner_line
+        s += "\n"
+        s += content
+        s += "\n"
+        s += py_trees.display.unicode_tree(root)
+        s += "\n"
+        s += banner_line
+    else:
+        s = content
+    return s
+
+
+def epilog() -> typing.Optional[str]:
+    """
+    为--help打印一个有趣的结语。
+
+    返回:
+       有趣的结语信息
+    """
+    if py_trees.console.has_colours:
+        return (
+            console.cyan
+            + "他的面条般的附属物延伸出去抚摸被祝福的人...\n"
+            + console.reset
+        )
+    else:
+        return None
+
+
+def command_line_argument_parser() -> argparse.ArgumentParser:
+    """
+    处理命令行参数。
+
+    返回:
+        参数解析器
+    """
+    parser = argparse.ArgumentParser(
+        description=description(create_root()),
+        epilog=epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "-r", "--render", action="store_true", help="将dot树渲染到文件"
+    )
+    group.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="在每个tick暂停并等待按键",
+    )
+    return parser
+
+
+def pre_tick_handler(behaviour_tree: py_trees.trees.BehaviourTree) -> None:
+    """在树的每个tick之前立即打印一个带有当前tick计数的横幅。
+
+    参数:
+       behaviour_tree: 要tick的树（用于获取计数号）
+    """
+    print("\n--------- 运行 %s ---------\n" % behaviour_tree.count)
+
+
+def post_tick_handler(
+    snapshot_visitor: py_trees.visitors.SnapshotVisitor,
+    behaviour_tree: py_trees.trees.BehaviourTree,
+) -> None:
+    """
+    打印有关树访问部分的数据。
+
+    参数:
+        snapshot_handler: 收集有关树访问部分的数据
+        behaviour_tree: 要收集数据的树
+    """
+    print(
+        "\n"
+        + py_trees.display.unicode_tree(
+            root=behaviour_tree.root,
+            visited=snapshot_visitor.visited,
+            previously_visited=snapshot_visitor.previously_visited,
+        )
+    )
+    print(py_trees.display.unicode_blackboard())
+
+
+def create_root() -> py_trees.behaviour.Behaviour:
+    """
+    创建根行为及其子树。
+
+    返回:
+        根行为
+    """
+    eternal_guard = py_trees.composites.Sequence(name="永久守卫", memory=False)
+    condition_one = py_trees.behaviours.StatusQueue(
+        name="条件 1",
+        queue=[
+            py_trees.common.Status.SUCCESS,
+            py_trees.common.Status.FAILURE,
+            py_trees.common.Status.SUCCESS,
+        ],
+        eventually=py_trees.common.Status.SUCCESS,
+    )
+    condition_two = py_trees.behaviours.StatusQueue(
+        name="条件 2",
+        queue=[
+            py_trees.common.Status.SUCCESS,
+            py_trees.common.Status.SUCCESS,
+            py_trees.common.Status.FAILURE,
+        ],
+        eventually=py_trees.common.Status.SUCCESS,
+    )
+    task_sequence = py_trees.composites.Sequence(name="任务序列", memory=True)
+    task_one = py_trees.behaviours.Success(name="工作者 1")
+    task_two = py_trees.behaviours.Running(name="工作者 2")
+
+    eternal_guard.add_children([condition_one, condition_two, task_sequence])
+    task_sequence.add_children([task_one, task_two])
+    return eternal_guard
+
+
+##############################################################################
+# 主函数
+##############################################################################
+
+
+def main() -> None:
+    """演示脚本的入口点。"""
+    args = command_line_argument_parser().parse_args()
+    # py_trees.logging.level = py_trees.logging.Level.DEBUG
+    root = create_root()
+    print(description(root))
+
+    ####################
+    # 渲染
+    ####################
+    if args.render:
+        py_trees.display.render_dot_tree(root)
+        sys.exit()
+
+    ####################
+    # 树管理
+    ####################
+    behaviour_tree = py_trees.trees.BehaviourTree(root)
+    behaviour_tree.add_pre_tick_handler(pre_tick_handler)
+    behaviour_tree.visitors.append(py_trees.visitors.DebugVisitor())
+    snapshot_visitor = py_trees.visitors.SnapshotVisitor()
+    behaviour_tree.add_post_tick_handler(
+        functools.partial(post_tick_handler, snapshot_visitor)
+    )
+    behaviour_tree.visitors.append(snapshot_visitor)
+    behaviour_tree.setup(timeout=15)
+
+    ####################
+    # 定时运行
+    ####################
+    if args.interactive:
+        py_trees.console.read_single_keypress()
+    for _unused_i in range(1, 11):
+        try:
+            behaviour_tree.tick()
+            if args.interactive:
+                py_trees.console.read_single_keypress()
+            else:
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            break
+    print("\n")
